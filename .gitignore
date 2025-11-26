@@ -1,0 +1,16 @@
+# .gitignore 내용
+
+# 1. API 키 및 보안 파일 (절대 올리면 안 됨)
+.env
+.DS_Store
+
+# 2. 파이썬 관련 (용량이 큼)
+venv/
+__pycache__/
+*.pyc
+
+# 3. Node.js/React 관련 (용량이 엄청 큼)
+node_modules/
+dist/
+build/
+.npm
