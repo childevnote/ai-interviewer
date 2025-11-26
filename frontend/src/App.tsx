@@ -7,6 +7,14 @@ interface Message {
   content: string;
 }
 
+interface HistoryItem {
+  id: number;
+  date: string;
+  score: number;
+  feedback: string;
+  summary: string;
+}
+
 type Turn = "idle" | "ai" | "user" | "processing";
 
 function App() {
@@ -17,12 +25,17 @@ function App() {
   const [timeLeft, setTimeLeft] = useState<number>(300);
   const [isTestMode, setIsTestMode] = useState<boolean>(false);
 
-  // 자막 & 종료 상태
+  // 자막 & 종료
   const [captionText, setCaptionText] = useState<string>("");
   const [captionSpeaker, setCaptionSpeaker] = useState<"ai" | "user" | null>(
     null
   );
   const [isFinishing, setIsFinishing] = useState<boolean>(false);
+
+  // === [추가] 결과 및 기록 상태 ===
+  const [evaluation, setEvaluation] = useState<HistoryItem | null>(null); // 방금 끝난 면접 결과
+  const [showHistory, setShowHistory] = useState<boolean>(false); // 기록 보기 모드
+  const [historyList, setHistoryList] = useState<HistoryItem[]>([]); // 과거 기록 리스트
 
   // Refs
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -37,24 +50,39 @@ function App() {
   const SILENCE_THRESHOLD = 15;
   const SILENCE_DURATION = 3000;
 
-  // 타이머
   useEffect(() => {
     let interval: number | undefined;
     if (isInterviewing && timeLeft > 0) {
       interval = setInterval(() => setTimeLeft((t) => t - 1), 1000);
     } else if (timeLeft === 0) {
       alert("시간이 종료되었습니다.");
-      stopAll();
+      finishInterview(); // 종료 로직 실행
     }
     return () => clearInterval(interval);
   }, [isInterviewing, timeLeft]);
 
-  // 테스트 모드 자동 답변 트리거
   useEffect(() => {
     if (isInterviewing && turn === "user" && isTestMode) {
       simulateUserResponse();
     }
   }, [turn, isInterviewing, isTestMode]);
+
+  // === [핵심] 면접 종료 및 평가 요청 ===
+  const finishInterview = async () => {
+    stopAll();
+    setCaptionText("📝 면접관이 평가 중입니다...");
+
+    try {
+      // 평가 API 호출
+      const res = await axios.post("http://localhost:8000/evaluate", {
+        history: messages,
+      });
+      setEvaluation(res.data); // 결과 저장 (모달 띄우기용)
+    } catch (err) {
+      console.error(err);
+      alert("평가 중 오류가 발생했습니다.");
+    }
+  };
 
   const stopAll = () => {
     setIsInterviewing(false);
@@ -68,6 +96,16 @@ function App() {
       mediaRecorderRef.current.state !== "inactive"
     ) {
       mediaRecorderRef.current.stop();
+    }
+  };
+
+  const fetchHistory = async () => {
+    try {
+      const res = await axios.get("http://localhost:8000/history");
+      setHistoryList(res.data);
+      setShowHistory(true);
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -89,6 +127,7 @@ function App() {
   const startInterview = async () => {
     if (!resumeText) return alert("이력서를 먼저 업로드해주세요.");
     setIsInterviewing(true);
+    setEvaluation(null); // 이전 결과 초기화
     setTurn("ai");
 
     const initialHistory: Message[] = [
@@ -141,9 +180,8 @@ function App() {
     if (captionSpeaker === "ai") setCaptionText("");
 
     if (isFinishing) {
-      alert("면접이 종료되었습니다. 수고하셨습니다!");
-      stopAll();
       setIsFinishing(false);
+      finishInterview(); // 종료 및 평가 실행
       return;
     }
 
@@ -153,7 +191,6 @@ function App() {
     }
   };
 
-  // AI 지원자 시뮬레이션
   const simulateUserResponse = async () => {
     setCaptionSpeaker("user");
     setCaptionText("생각 중...");
@@ -186,7 +223,7 @@ function App() {
   const startRecording = async () => {
     setTurn("user");
     setCaptionSpeaker("user");
-    setCaptionText("듣고 있습니다..."); // 듣는 중 상태 표시
+    setCaptionText("듣고 있습니다...");
 
     try {
       if (
@@ -246,10 +283,10 @@ function App() {
       const averageVolume = sum / (bufferLength - 5);
 
       if (volumeBarRef.current) {
-        const visualVol = Math.min(100, averageVolume * 3); // 민감도 증가
+        const visualVol = Math.min(100, averageVolume * 3);
         volumeBarRef.current.style.width = `${visualVol}%`;
         volumeBarRef.current.style.backgroundColor =
-          averageVolume < SILENCE_THRESHOLD ? "#d1d6db" : "#3182f6"; // 토스 컬러 적용
+          averageVolume < SILENCE_THRESHOLD ? "#d1d6db" : "#3182f6";
       }
 
       if (averageVolume < SILENCE_THRESHOLD) {
@@ -309,47 +346,106 @@ function App() {
     return `${m}:${s < 10 ? "0" : ""}${s}`;
   };
 
+  // === [렌더링] UI 구성 ===
   return (
     <div className="app-container">
       <header>
         <h1>AI 모의 면접</h1>
-        <div className="timer">{formatTime(timeLeft)}</div>
+        {!showHistory && <div className="timer">{formatTime(timeLeft)}</div>}
       </header>
 
-      {!isInterviewing ? (
-        <div className="setup-box">
-          <div className="upload-area">
-            <label className="file-label">
-              <span style={{ fontSize: "24px", marginBottom: "8px" }}>📄</span>
-              <span>이력서 PDF 업로드</span>
-              <input
-                type="file"
-                accept=".pdf"
-                onChange={handleFileUpload}
-                hidden
-              />
-            </label>
-            {resumeText && (
-              <div className="file-status">✅ 이력서 분석 완료</div>
+      {/* 1. 면접 기록 보기 모드 */}
+      {showHistory ? (
+        <div className="history-container">
+          <button className="back-btn" onClick={() => setShowHistory(false)}>
+            ← 뒤로가기
+          </button>
+          <h2>📂 지난 면접 기록</h2>
+          <div className="history-list">
+            {historyList.length === 0 ? (
+              <p>기록이 없습니다.</p>
+            ) : (
+              historyList.map((item) => (
+                <div key={item.id} className="history-card">
+                  <div className="history-header">
+                    <span className="history-date">{item.date}</span>
+                    <span
+                      className={`history-score ${
+                        item.score >= 80 ? "high" : "low"
+                      }`}
+                    >
+                      {item.score}점
+                    </span>
+                  </div>
+                  <p className="history-summary">{item.summary}</p>
+                  <div className="history-feedback">
+                    <strong>피드백:</strong> {item.feedback}
+                  </div>
+                </div>
+              ))
             )}
           </div>
+        </div>
+      ) : /* 2. 일반 모드 (설정 or 면접) */
+      !isInterviewing ? (
+        <div className="setup-box">
+          {/* 결과 모달 (면접 직후) */}
+          {evaluation && (
+            <div className="result-card">
+              <h3>🎉 면접 결과 리포트</h3>
+              <div className="score-display">{evaluation.score}점</div>
+              <p className="feedback-text">{evaluation.feedback}</p>
+              <button
+                className="primary-btn"
+                onClick={() => setEvaluation(null)}
+              >
+                확인
+              </button>
+            </div>
+          )}
 
-          <div className="test-mode-card">
-            <input
-              type="checkbox"
-              checked={isTestMode}
-              onChange={(e) => setIsTestMode(e.target.checked)}
-            />
-            <span>자동 테스트 모드 켜기</span>
-          </div>
+          {!evaluation && (
+            <>
+              <div className="upload-area">
+                <label className="file-label">
+                  <span style={{ fontSize: "24px", marginBottom: "8px" }}>
+                    📄
+                  </span>
+                  <span>이력서 PDF 업로드</span>
+                  <input
+                    type="file"
+                    accept=".pdf"
+                    onChange={handleFileUpload}
+                    hidden
+                  />
+                </label>
+                {resumeText && (
+                  <div className="file-status">✅ 이력서 분석 완료</div>
+                )}
+              </div>
 
-          <button
-            className="primary-btn"
-            onClick={startInterview}
-            disabled={!resumeText}
-          >
-            면접 시작하기
-          </button>
+              <div className="test-mode-card">
+                <input
+                  type="checkbox"
+                  checked={isTestMode}
+                  onChange={(e) => setIsTestMode(e.target.checked)}
+                />
+                <span>자동 테스트 모드 켜기</span>
+              </div>
+
+              <button
+                className="primary-btn"
+                onClick={startInterview}
+                disabled={!resumeText}
+              >
+                면접 시작하기
+              </button>
+
+              <button className="secondary-btn" onClick={fetchHistory}>
+                지난 기록 보기
+              </button>
+            </>
+          )}
         </div>
       ) : (
         <div className="interview-room">
@@ -394,7 +490,6 @@ function App() {
             </div>
           </div>
 
-          {/* 볼륨 미터 (User 턴일 때만) */}
           {turn === "user" && !isTestMode && (
             <div className="volume-container">
               <div className="volume-bar-bg">
@@ -411,8 +506,7 @@ function App() {
             <button
               className="secondary-btn"
               onClick={() => {
-                stopAll();
-                alert("면접을 종료합니다.");
+                finishInterview(); // 종료 버튼도 평가 로직 실행
               }}
             >
               면접 종료하기
@@ -421,7 +515,6 @@ function App() {
 
           <audio ref={audioRef} onEnded={handleAudioEnded} hidden />
 
-          {/* 하단 자막 오버레이 */}
           {captionText && (
             <div className="caption-overlay">
               <strong>

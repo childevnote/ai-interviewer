@@ -298,3 +298,95 @@ input[type="checkbox"] {
     transform: translate(-50%, 0);
   }
 }
+
+/* === 결과 리포트 카드 === */
+.result-card {
+  text-align: center;
+  animation: slideUp 0.3s ease;
+}
+
+.score-display {
+  font-size: 60px;
+  font-weight: 800;
+  color: var(--toss-blue);
+  margin: 20px 0;
+}
+
+.feedback-text {
+  background-color: #f9fafb;
+  padding: 20px;
+  border-radius: var(--radius-md);
+  color: #4e5968;
+  line-height: 1.6;
+  text-align: left;
+  margin-bottom: 20px;
+}
+
+/* === 히스토리 화면 === */
+.history-container {
+  width: 100%;
+  max-width: 500px;
+}
+
+.back-btn {
+  border: none;
+  background: none;
+  font-size: 16px;
+  color: var(--text-grey);
+  cursor: pointer;
+  margin-bottom: 20px;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.history-card {
+  background-color: white;
+  padding: 20px;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.history-date {
+  font-size: 14px;
+  color: var(--text-grey);
+}
+
+.history-score {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.history-score.high {
+  color: var(--toss-blue);
+}
+
+.history-score.low {
+  color: #ff4b4b;
+}
+
+.history-summary {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 10px 0;
+  color: var(--text-black);
+}
+
+.history-feedback {
+  font-size: 14px;
+  color: #6b7684;
+  line-height: 1.5;
+  background-color: #f2f4f6;
+  padding: 10px;
+  border-radius: 8px;
+}
