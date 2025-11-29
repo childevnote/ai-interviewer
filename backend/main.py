@@ -232,8 +232,20 @@ async def stt_endpoint(file: UploadFile = File(...)):
 async def evaluate_interview(request: EvaluationRequest):
     try:
         evaluation_system_prompt = """
-        면접 대화 내용을 분석하여 JSON으로 평가하세요.
-        { "score": 점수, "feedback": "내용", "summary": "요약" }
+
+       면접 대화 내용을 분석하여 JSON 형식으로 평가하세요.
+        점수는 **100점 만점**을 기준으로 측정해야 합니다.
+
+        출력 형식 (JSON):
+        { 
+         "score": 점수, 
+        "feedback": "내용", 
+        "summary": "요약" 
+        }
+
+
+
+
         """
         
         completion = client.chat.completions.create(
