@@ -73,7 +73,7 @@ function App() {
   const isEvaluatingRef = useRef<boolean>(false);
 
   const SILENCE_THRESHOLD = 15;
-  const SILENCE_DURATION = 3000;
+  const SILENCE_DURATION = 5000;
 
   useEffect(() => {
     let interval: number | undefined;
