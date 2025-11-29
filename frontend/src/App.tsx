@@ -7,12 +7,29 @@ interface Message {
   content: string;
 }
 
+const JOB_ROLES = [
+  "개발자 (공통)",
+  "프론트엔드",
+  "백엔드",
+  "풀스택",
+  "디자이너",
+  "기획자(PM/PO)",
+  "정보보안",
+  "AI/머신러닝",
+];
+
 interface HistoryItem {
   id: number;
   date: string;
   score: number;
   feedback: string;
   summary: string;
+}
+
+// [추가] 신뢰도 데이터 타입 정의
+interface Reliability {
+  score: number;
+  reason: string;
 }
 
 type Turn = "idle" | "ai" | "user" | "processing";
@@ -24,7 +41,7 @@ function App() {
   const [turn, setTurn] = useState<Turn>("idle");
   const [timeLeft, setTimeLeft] = useState<number>(300);
   const [isTestMode, setIsTestMode] = useState<boolean>(false);
-
+  const [selectedRole, setSelectedRole] = useState<string>("");
   // 자막 & 종료
   const [captionText, setCaptionText] = useState<string>("");
   const [captionSpeaker, setCaptionSpeaker] = useState<"ai" | "user" | null>(
@@ -32,10 +49,14 @@ function App() {
   );
   const [isFinishing, setIsFinishing] = useState<boolean>(false);
 
-  // === [추가] 결과 및 기록 상태 ===
-  const [evaluation, setEvaluation] = useState<HistoryItem | null>(null); // 방금 끝난 면접 결과
-  const [showHistory, setShowHistory] = useState<boolean>(false); // 기록 보기 모드
-  const [historyList, setHistoryList] = useState<HistoryItem[]>([]); // 과거 기록 리스트
+  // 결과 및 기록 상태
+  const [evaluation, setEvaluation] = useState<HistoryItem | null>(null);
+  const [showHistory, setShowHistory] = useState<boolean>(false);
+  const [historyList, setHistoryList] = useState<HistoryItem[]>([]);
+
+  // [추가] 신뢰도 및 로딩 상태
+  const [reliability, setReliability] = useState<Reliability | null>(null);
+  const [isUploading, setIsUploading] = useState<boolean>(false);
 
   // Refs
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -47,6 +68,9 @@ function App() {
   const requestRef = useRef<number | null>(null);
   const volumeBarRef = useRef<HTMLDivElement | null>(null);
 
+  // 평가 중복 방지 락(Lock)
+  const isEvaluatingRef = useRef<boolean>(false);
+
   const SILENCE_THRESHOLD = 15;
   const SILENCE_DURATION = 3000;
 
@@ -56,7 +80,7 @@ function App() {
       interval = setInterval(() => setTimeLeft((t) => t - 1), 1000);
     } else if (timeLeft === 0) {
       alert("시간이 종료되었습니다.");
-      finishInterview(); // 종료 로직 실행
+      finishInterview();
     }
     return () => clearInterval(interval);
   }, [isInterviewing, timeLeft]);
@@ -67,17 +91,19 @@ function App() {
     }
   }, [turn, isInterviewing, isTestMode]);
 
-  // === [핵심] 면접 종료 및 평가 요청 ===
   const finishInterview = async () => {
+    if (isEvaluatingRef.current) return; // 이미 평가 중이면 중단
+    isEvaluatingRef.current = true; // 잠금 설정
+    setIsFinishing(false);
+
     stopAll();
     setCaptionText("📝 면접관이 평가 중입니다...");
 
     try {
-      // 평가 API 호출
       const res = await axios.post("http://localhost:8000/evaluate", {
         history: messages,
       });
-      setEvaluation(res.data); // 결과 저장 (모달 띄우기용)
+      setEvaluation(res.data);
     } catch (err) {
       console.error(err);
       alert("평가 중 오류가 발생했습니다.");
@@ -109,25 +135,39 @@ function App() {
     }
   };
 
+  // [핵심] 파일 업로드 함수 수정됨
   const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // 1. 상태 초기화 및 로딩 시작
+    setResumeText("");
+    setReliability(null);
+    setIsUploading(true); // 여기서 로딩 화면을 켭니다.
+
     const formData = new FormData();
     formData.append("file", file);
 
     try {
+      // 2. 서버 요청 (이 시간 동안 로딩 화면이 보임)
       const res = await axios.post("http://localhost:8000/upload", formData);
       setResumeText(res.data.text);
+      setReliability(res.data.reliability);
     } catch (err) {
       console.error(err);
-      alert("파일 업로드 실패");
+      alert("파일 업로드 및 분석 실패");
+    } finally {
+      // 3. 성공하든 실패하든 로딩 종료
+      setIsUploading(false);
     }
   };
 
   const startInterview = async () => {
     if (!resumeText) return alert("이력서를 먼저 업로드해주세요.");
+
+    isEvaluatingRef.current = false; // 평가 락 해제
     setIsInterviewing(true);
-    setEvaluation(null); // 이전 결과 초기화
+    setEvaluation(null);
     setTurn("ai");
 
     const initialHistory: Message[] = [
@@ -150,6 +190,7 @@ function App() {
       const res = await axios.post("http://localhost:8000/chat", {
         message: "",
         history: history,
+        role: selectedRole, // 🔥 선택된 직무 전송
       });
       const { ai_message, audio_data, is_finished } = res.data;
 
@@ -181,7 +222,7 @@ function App() {
 
     if (isFinishing) {
       setIsFinishing(false);
-      finishInterview(); // 종료 및 평가 실행
+      finishInterview();
       return;
     }
 
@@ -346,7 +387,6 @@ function App() {
     return `${m}:${s < 10 ? "0" : ""}${s}`;
   };
 
-  // === [렌더링] UI 구성 ===
   return (
     <div className="app-container">
       <header>
@@ -406,21 +446,159 @@ function App() {
 
           {!evaluation && (
             <>
+              {/* === [수정된 부분] 로딩 화면 및 결과 표시 === */}
               <div className="upload-area">
-                <label className="file-label">
-                  <span style={{ fontSize: "24px", marginBottom: "8px" }}>
-                    📄
-                  </span>
-                  <span>이력서 PDF 업로드</span>
-                  <input
-                    type="file"
-                    accept=".pdf"
-                    onChange={handleFileUpload}
-                    hidden
-                  />
-                </label>
-                {resumeText && (
-                  <div className="file-status">✅ 이력서 분석 완료</div>
+                {isUploading ? (
+                  // 1. 로딩 중 화면
+                  <div className="loading-container">
+                    <div className="spinner"></div>
+                    <div className="loading-text">
+                      <strong>AI가 이력서를 분석 중입니다...</strong>
+                      <br />
+                      <span style={{ fontSize: "12px", color: "#888" }}>
+                        신뢰도 측정 및 내용을 요약하고 있습니다.
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  // 2. 평상시 (업로드 버튼)
+                  <label
+                    className={`file-label ${resumeText ? "uploaded" : ""}`}
+                  >
+                    <span style={{ fontSize: "24px", marginBottom: "8px" }}>
+                      {resumeText ? "✅" : "📄"}
+                    </span>
+                    <span>
+                      {resumeText ? "이력서 재업로드" : "이력서 PDF 업로드"}
+                    </span>
+                    <input
+                      type="file"
+                      accept=".pdf"
+                      onChange={handleFileUpload}
+                      hidden
+                    />
+                  </label>
+                )}
+
+                {/* 3. 로딩 완료 후 분석 결과 카드 */}
+                {!isUploading && resumeText && reliability && (
+                  <div
+                    className="resume-status-card"
+                    style={{
+                      marginTop: "15px",
+                      padding: "15px",
+                      background: "#f8f9fa",
+                      borderRadius: "8px",
+                      textAlign: "left",
+                      border: "1px solid #e1e4e8",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: "8px",
+                      }}
+                    >
+                      <strong>📊 분석 완료</strong>
+                      <span
+                        style={{
+                          fontWeight: "bold",
+                          color:
+                            reliability.score >= 80
+                              ? "#2196f3"
+                              : reliability.score >= 50
+                              ? "#ff9800"
+                              : "#f44336",
+                        }}
+                      >
+                        신뢰도 {reliability.score}점
+                      </span>
+                    </div>
+
+                    <p
+                      style={{
+                        fontSize: "14px",
+                        color: "#4e5968",
+                        margin: "0 0 8px 0",
+                        lineHeight: "1.4",
+                      }}
+                    >
+                      {reliability.reason}
+                    </p>
+
+                    {/* 경고창 (50점 미만) */}
+                    {reliability.score < 50 && (
+                      <div
+                        style={{
+                          marginTop: "10px",
+                          padding: "8px",
+                          backgroundColor: "#ffebee",
+                          color: "#c62828",
+                          fontSize: "13px",
+                          borderRadius: "4px",
+                          border: "1px solid #ffcdd2",
+                        }}
+                      >
+                        ⚠️ <strong>주의:</strong> 이력서 내용이 너무 부족합니다.{" "}
+                        <br />
+                        면접 질문이 정확하지 않을 수 있습니다.
+                      </div>
+                    )}
+                    {resumeText && !isUploading && (
+                      <div
+                        className="role-selection"
+                        style={{ marginTop: "20px", textAlign: "left" }}
+                      >
+                        <h3
+                          style={{
+                            fontSize: "16px",
+                            marginBottom: "10px",
+                            color: "#333",
+                          }}
+                        >
+                          💼 지원 직무를 선택해주세요
+                        </h3>
+                        <div
+                          style={{
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: "8px",
+                          }}
+                        >
+                          {JOB_ROLES.map((role) => (
+                            <button
+                              key={role}
+                              className={`role-badge ${
+                                selectedRole === role ? "selected" : ""
+                              }`}
+                              onClick={() => setSelectedRole(role)}
+                              style={{
+                                padding: "8px 16px",
+                                borderRadius: "20px",
+                                border:
+                                  selectedRole === role
+                                    ? "1px solid #3182f6"
+                                    : "1px solid #d1d6db",
+                                backgroundColor:
+                                  selectedRole === role ? "#e8f3ff" : "#fff",
+                                color:
+                                  selectedRole === role ? "#3182f6" : "#6b7684",
+                                cursor: "pointer",
+                                fontSize: "14px",
+                                fontWeight:
+                                  selectedRole === role ? "bold" : "normal",
+                                transition: "all 0.2s",
+                              }}
+                            >
+                              {role}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -436,7 +614,12 @@ function App() {
               <button
                 className="primary-btn"
                 onClick={startInterview}
-                disabled={!resumeText}
+                // 🔥 직무 미선택 시 시작 불가하도록 변경
+                disabled={!resumeText || isUploading || !selectedRole}
+                style={{
+                  opacity:
+                    !resumeText || isUploading || !selectedRole ? 0.5 : 1,
+                }}
               >
                 면접 시작하기
               </button>
@@ -506,7 +689,7 @@ function App() {
             <button
               className="secondary-btn"
               onClick={() => {
-                finishInterview(); // 종료 버튼도 평가 로직 실행
+                finishInterview();
               }}
             >
               면접 종료하기

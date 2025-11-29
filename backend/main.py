@@ -8,11 +8,17 @@ import io
 import os
 import base64
 import json
-import sqlite3 # DB 추가
+import sqlite3
 from datetime import datetime
 
+# .env 파일 로드
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
+
+# API 키 확인 디버깅
+if not api_key:
+    print("🚨 경고: OPENAI_API_KEY가 로드되지 않았습니다. .env 파일을 확인하세요.")
+
 client = OpenAI(api_key=api_key)
 
 app = FastAPI()
@@ -26,27 +32,32 @@ app.add_middleware(
 )
 
 DB_NAME = "interview.db"
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    # 면접 기록 테이블 생성
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS interview_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT,
-            score INTEGER,
-            feedback TEXT,
-            summary TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
 
-# 앱 시작 시 DB 초기화 실행
+def init_db():
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS interview_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT,
+                score INTEGER,
+                feedback TEXT,
+                summary TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"DB Init Error: {e}")
+
 init_db()
+
+# === Request Models ===
 class ChatRequest(BaseModel):
     message: str
     history: list
+    role: str = "공통" 
 
 class SimulationRequest(BaseModel):
     history: list
@@ -54,6 +65,8 @@ class SimulationRequest(BaseModel):
 
 class EvaluationRequest(BaseModel):
     history: list    
+
+# === API Endpoints ===
 
 @app.post("/upload")
 async def upload_resume(file: UploadFile = File(...)):
@@ -63,80 +76,106 @@ async def upload_resume(file: UploadFile = File(...)):
         text = ""
         for page in pdf_reader.pages:
             text += page.extract_text()
-        return {"text": text}
+        
+        if len(text.strip()) < 50:
+             return {
+                 "text": "", 
+                 "reliability": {"score": 0, "reason": "문서 내용이 너무 부족하여 판독할 수 없습니다."}
+             }
+
+        check_prompt = """
+        당신은 채용 담당자입니다. 
+        제공된 텍스트가 '채용 이력서'로서 적합한 형식을 갖추고 있는지 분석하세요.
+        [출력 포맷 - JSON]
+        {
+            "score": 0~100 사이의 정수,
+            "reason": "한 줄 요약"
+        }
+        """
+
+        completion = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": check_prompt},
+                {"role": "user", "content": text[:3000]}
+            ],
+            response_format={"type": "json_object"}
+        )
+        
+        analysis_result = json.loads(completion.choices[0].message.content)
+
+        return {
+            "text": text,
+            "reliability": analysis_result 
+        }
+
     except Exception as e:
+        print(f"🚨 Upload Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
-    """
-    GPT가 답변과 함께 '면접 종료 여부'를 판단하여 JSON으로 반환
-    """
     try:
+        print(f"DEBUG: /chat 요청 받음. Role: {request.role}") # 디버그 로그 1
+
         messages = request.history.copy()
         
-        # [핵심] 압박 면접관 페르소나 주입
-        system_instruction = {
-            "role": "system",
-            "content": """
-            
-            [중요 지침 - 면접관 모드]
-            역할:
-            당신은 10년 이상 경력의 전문 기술 면접관입니다. 목표는 지원자의 역량과 사고 과정, 문제 해결 능력을 객관적으로 파악하는 것입니다.
-
-            행동 원칙:
-	        1.	대답을 하지 않는다.
-            → 당신은 질문만 한다. 지원자가 답한 내용을 기반으로 후속 질문을 만든다.
-            2.	질문은 구체적이고 직무 중심이며, 난이도는 지원자의 답변 수준에 맞춰 점진적으로 높인다.
-            3.	모호한 답변을 받으면
-            → “조금 더 구체적으로 설명해 주실 수 있나요?”
-            같은 방식으로 명확성을 요구한다.
-            4.	질문 카테고리:
-            •	기술 역량 관련 질문
-            •	프로젝트 경험 기반 질문
-            •	문제 해결 능력/논리적 사고 질문
-            •	협업 경험/커뮤니케이션 능력 질문
-            •	상황 기반 질문 (Behavioral Questions)
-            •	성향/문화 적합성(Fit) 질문
-            5.	한 번에 하나의 질문만 한다.
-            → 지원자의 답변이 오기 전까지 다른 말을 하지 않는다.
-         	6.	너무 길거나 과도하게 설명하지 않는다.질문은 간결하고 면접 스타일을 유지한다.
-            7.	친절하지도 불친절하지도 않은 중립적인 면접관 톤을 유지한다.
-            8.	지원자의 답변을 평가하는 문장을 면접 중에는 절대 말하지 않는다.
-            (예: “좋습니다”, “훌륭해요”, “잘못됐어요” 등 금지)
-
-            9. **언어**: 무조건 **한국어**만 사용하세요. (용어나 개념 등은 영어 사용 가능)
-            10. **JSON 포맷**: 응답은 반드시 아래 JSON 형식을 지키세요.
-            {
-                "response": "면접관의 발화 내용",
-                "is_finished": true 또는 false
-            }          
-            'is_finished' = true 조건:
-            - 지원자가 명확히 종료 의사를 밝힘 ("수고하셨습니다" 등).
-            - 당신이 "면접을 이만 마칩니다"라고 말했을 때.
-            
-            말투는 정중하지만 차갑고 건조한 사무적인 톤(하십시오체/해요체)을 유지하세요.
-            """
-        }
+        # 시스템 프롬프트 설정
+        role_instruction = f"당신은 {request.role} 직무 면접관입니다." if request.role else "당신은 전문 면접관입니다."
+        system_content = f"""
+        [중요 지침 - 면접관 모드]
+        역할: {role_instruction}
+        목표: 지원자의 이력서를 검토하고 {request.role} 직무 역량을 검증하는 질문을 하십시오.
+        행동: 질문만 하십시오. 절대 평가하거나 칭찬("좋습니다" 등)하지 마십시오.
         
-        messages.append(system_instruction)
+        [필수 출력 포맷 - JSON]
+        반드시 아래 JSON 포맷으로만 응답하십시오.
+        {{
+            "response": "질문 내용",
+            "is_finished": false
+        }}
+        """
 
+        # 시스템 메시지 병합 로직 (맨 앞으로 이동)
+        if messages and messages[0]['role'] == 'system':
+            original_resume = messages[0]['content']
+            messages[0] = {"role": "system", "content": f"{system_content}\n\n[이력서]\n{original_resume}"}
+        else:
+            messages.insert(0, {"role": "system", "content": system_content})
+
+        print("DEBUG: GPT 호출 시작...") # 디버그 로그 2
+        
+        # GPT 호출
         completion = client.chat.completions.create(
             model="gpt-4o",
             messages=messages,
             response_format={"type": "json_object"}
         )
         
-        gpt_result = json.loads(completion.choices[0].message.content)
-        ai_text = gpt_result["response"]
-        is_finished = gpt_result["is_finished"]
+        gpt_raw = completion.choices[0].message.content
+        print(f"DEBUG: GPT 응답 수신 완료. 내용: {gpt_raw[:50]}...") # 디버그 로그 3
 
+        # JSON 파싱
+        try:
+            gpt_result = json.loads(gpt_raw)
+        except json.JSONDecodeError:
+            print(f"🚨 JSON 파싱 에러! 원본: {gpt_raw}")
+            gpt_result = {"response": "죄송합니다. 통신 오류가 발생했습니다. 다시 말씀해 주세요.", "is_finished": False}
+
+        ai_text = gpt_result.get("response", "오류가 발생했습니다.")
+        is_finished = gpt_result.get("is_finished", False)
+
+        print("DEBUG: TTS 생성 시작...") # 디버그 로그 4
+
+        # TTS 생성
         speech_response = client.audio.speech.create(
             model="tts-1",
-            voice="onyx", # 중저음의 단호한 목소리
+            voice="onyx",
             input=ai_text
         )
         audio_b64 = base64.b64encode(speech_response.content).decode('utf-8')
+        
+        print("DEBUG: TTS 생성 완료. 응답 반환.") # 디버그 로그 5
 
         return {
             "ai_message": ai_text, 
@@ -145,41 +184,31 @@ async def chat_endpoint(request: ChatRequest):
         }
         
     except Exception as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # 여기가 중요합니다. 서버 터미널에 에러 내용을 자세히 출력합니다.
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"🚨 [CRITICAL ERROR] in /chat:\n{error_details}")
+        
+        # 클라이언트에게도 500 에러와 함께 메시지 전달
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @app.post("/simulate")
 async def simulate_candidate(request: SimulationRequest):
     try:
         last_question = request.history[-1]['content']
-        
         candidate_system_prompt = f"""
-        당신은 면접을 보고 있는 한국인 지원자입니다.
-        압박 면접 상황이라 다소 긴장한 상태입니다.
-        
-        [규칙]
-        1. 무조건 한국어로만 답변하세요.
-        2. 답변은 3~5문장 내외로 하되, 가끔은 말문이 막히거나 당황하는 모습도 보여주세요.
-        3. 구어체(존댓말)를 사용하세요.
-        
-        [내 이력서]
-        {request.resume_text}
+        당신은 면접 지원자입니다. 이력서 내용: {request.resume_text}
+        질문: {last_question}
+        한국어로 3문장 이내로 답변하세요.
         """
         
-        messages = [
-            {"role": "system", "content": candidate_system_prompt},
-            {"role": "user", "content": last_question} 
-        ]
-
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=messages
+            messages=[{"role": "system", "content": candidate_system_prompt}]
         )
-        answer = response.choices[0].message.content
-        
-        return {"answer": answer}
-
+        return {"answer": response.choices[0].message.content}
     except Exception as e:
+        print(f"Simulation Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/stt")
@@ -189,7 +218,6 @@ async def stt_endpoint(file: UploadFile = File(...)):
         audio_file = io.BytesIO(content)
         audio_file.name = "audio.mp3" 
         
-        # 한국어 강제 인식
         transcript = client.audio.transcriptions.create(
             model="whisper-1", 
             file=audio_file,
@@ -197,71 +225,49 @@ async def stt_endpoint(file: UploadFile = File(...)):
         )
         return {"text": transcript.text}
     except Exception as e:
+        print(f"STT Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/evaluate")
 async def evaluate_interview(request: EvaluationRequest):
     try:
-        # GPT에게 전체 대화 내용을 주고 평가 요청
         evaluation_system_prompt = """
-        당신은 채용 전문가입니다. 다음 면접 대화 내용을 분석하여 지원자를 평가하세요.
-        
-        [필수 출력 포맷 - JSON]
-        {
-            "score": 0~100 사이의 정수 점수,
-            "feedback": "지원자의 강점과 약점에 대한 구체적인 피드백 (한국어, 3문장 이상)",
-            "summary": "면접 내용 한줄 요약"
-        }
-        
-        평가 기준:
-        - 답변의 구체성 및 논리성
-        - 직무 적합성
-        - 태도 및 자신감
+        면접 대화 내용을 분석하여 JSON으로 평가하세요.
+        { "score": 점수, "feedback": "내용", "summary": "요약" }
         """
         
-        messages = [
-            {"role": "system", "content": evaluation_system_prompt},
-            {"role": "user", "content": json.dumps(request.history, ensure_ascii=False)}
-        ]
-
         completion = client.chat.completions.create(
             model="gpt-4o",
-            messages=messages,
+            messages=[
+                {"role": "system", "content": evaluation_system_prompt},
+                {"role": "user", "content": json.dumps(request.history, ensure_ascii=False)}
+            ],
             response_format={"type": "json_object"}
         )
         
         eval_result = json.loads(completion.choices[0].message.content)
         
-        score = eval_result["score"]
-        feedback = eval_result["feedback"]
-        summary = eval_result["summary"]
-        current_date = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-        # DB에 저장
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute("INSERT INTO interview_history (date, score, feedback, summary) VALUES (?, ?, ?, ?)",
-                  (current_date, score, feedback, summary))
+                  (datetime.now().strftime("%Y-%m-%d %H:%M"), eval_result["score"], eval_result["feedback"], eval_result["summary"]))
         conn.commit()
         conn.close()
         
         return eval_result
-
     except Exception as e:
         print(f"Eval Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# === [추가됨] 과거 기록 조회 API ===
 @app.get("/history")
 async def get_history():
     try:
         conn = sqlite3.connect(DB_NAME)
-        conn.row_factory = sqlite3.Row # 딕셔너리 형태로 가져오기 위함
+        conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT * FROM interview_history ORDER BY id DESC")
         rows = c.fetchall()
         conn.close()
-        
         return [dict(row) for row in rows]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))        
+        raise HTTPException(status_code=500, detail=str(e))
