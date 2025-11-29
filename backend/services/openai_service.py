@@ -10,7 +10,7 @@ import json
 from fastapi import UploadFile, File, HTTPException
 import traceback
 # schemas/request.py에서 Pydantic 모델을 임포트합니다.
-from schemas.request import ChatRequest, SimulationRequest, EvaluationRequest 
+from schemas.request import ChatRequest, SimulationRequest, EvaluationRequest, HintRequest
 
 # .env 파일 로드 및 OpenAI 클라이언트 초기화
 load_dotenv()
@@ -72,7 +72,25 @@ async def generate_chat_response(request: ChatRequest):
     """GPT와 채팅하고 응답을 TTS로 변환합니다."""
     try:
         messages = request.history.copy()
-        
+        current_q_count = sum(1 for m in messages if m['role'] == 'assistant')
+        if current_q_count >= request.question_count:
+            # 강제로 종료 처리
+            closing_text = "모든 질문이 끝났습니다. 수고하셨습니다. 면접을 종료하겠습니다."
+            
+            # TTS 생성 (종료 멘트)
+            speech_response = client.audio.speech.create(
+                model="tts-1", voice="onyx", input=closing_text
+            )
+            audio_b64 = base64.b64encode(speech_response.content).decode('utf-8')
+
+            return {
+                "ai_message": closing_text,
+                "audio_data": audio_b64,
+                "is_finished": True # 종료 플래그 True
+            }
+
+        # 3. 진행 중일 때 시스템 프롬프트 구성
+        remaining_count = request.question_count - current_q_count
         # 시스템 프롬프트 설정 (이 부분은 API 로직과 동일하게 유지)
         role_instruction = f"당신은 {request.role} 직무 면접관입니다." if request.role else "당신은 전문 면접관입니다."
         system_content = f"""
@@ -80,7 +98,13 @@ async def generate_chat_response(request: ChatRequest):
         역할: {role_instruction}
         목표: 지원자의 이력서를 검토하고 {request.role} 직무 역량을 검증하는 질문을 하십시오.
         행동: 질문만 하십시오. 절대 평가하거나 칭찬("좋습니다" 등)하지 마십시오.
-        
+
+        [질문 카운트 정보]
+        - 총 목표 질문 수: {request.question_count}개
+        - 현재 진행된 질문 수: {current_q_count}개
+        - 이번이 {current_q_count + 1}번째 질문입니다.
+        - 앞으로 남은 질문은 {remaining_count - 1}개입니다.
+
         행동 원칙:
 	        1.	대답을 하지 않는다.
             → 당신은 질문만 한다. 지원자가 답한 내용을 기반으로 후속 질문을 만든다.
@@ -88,7 +112,6 @@ async def generate_chat_response(request: ChatRequest):
             3.	모호한 답변을 받으면
             → “조금 더 구체적으로 설명해 주실 수 있나요?”
             같은 방식으로 명확성을 요구한다.
-            4.  질문이 10개 했고 지원자의 말이 끝났을 때 면접을 마치겠다는 메세지를 전한다.
             4.	질문 카테고리:
             •	기술 역량 관련 질문
             •	프로젝트 경험 기반 질문
@@ -155,6 +178,31 @@ async def generate_chat_response(request: ChatRequest):
         error_details = traceback.format_exc()
         print(f"🚨 [CRITICAL ERROR] in generate_chat_response:\n{error_details}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    
+async def generate_answer_hint(request: HintRequest):
+    """현재 질문에 대한 모범 답안 힌트를 생성합니다."""
+    try:
+        system_prompt = f"""
+        당신은 {request.role} 직무의 베테랑 멘토입니다.
+        지원자의 이력서: {request.resume_text}
+        
+        면접관의 질문이 주어지면, 지원자가 답변할 수 있는 '핵심 키워드'와 '모범 답변 가이드'를 짧게 제시하세요.
+        답변을 대신 써주지 말고, 어떤 방향으로 말해야 할지 가이드라인을 3줄 이내로 제공하세요.
+        (말투: "~하는 것이 좋습니다." 혹은 "~한 경험을 강조하세요.")
+        """
+
+        completion = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"면접관 질문: {request.question}"}
+            ]
+        )
+        
+        return {"hint": completion.choices[0].message.content}
+    except Exception as e:
+        print(f"Hint Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def simulate_candidate_answer(request: SimulationRequest):
     """AI 지원자의 답변을 시뮬레이션합니다."""
