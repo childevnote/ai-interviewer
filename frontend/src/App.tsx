@@ -57,7 +57,7 @@ function App() {
   // [추가] 신뢰도 및 로딩 상태
   const [reliability, setReliability] = useState<Reliability | null>(null);
   const [isUploading, setIsUploading] = useState<boolean>(false);
-
+  const [isEvaluating, setIsEvaluating] = useState<boolean>(false);
   // Refs
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -92,12 +92,13 @@ function App() {
   }, [turn, isInterviewing, isTestMode]);
 
   const finishInterview = async () => {
-    if (isEvaluatingRef.current) return; // 이미 평가 중이면 중단
-    isEvaluatingRef.current = true; // 잠금 설정
-    setIsFinishing(false);
+    if (isEvaluatingRef.current) return;
+    isEvaluatingRef.current = true;
 
+    setIsFinishing(false);
+    setIsEvaluating(true);
     stopAll();
-    setCaptionText("📝 면접관이 평가 중입니다...");
+    setCaptionText("");
 
     try {
       const res = await axios.post("http://localhost:8000/evaluate", {
@@ -107,6 +108,9 @@ function App() {
     } catch (err) {
       console.error(err);
       alert("평가 중 오류가 발생했습니다.");
+    } finally {
+      setIsEvaluating(false);
+      isEvaluatingRef.current = false;
     }
   };
 
@@ -426,11 +430,16 @@ function App() {
             )}
           </div>
         </div>
-      ) : /* 2. 일반 모드 (설정 or 면접) */
-      !isInterviewing ? (
+      ) : !isInterviewing ? (
         <div className="setup-box">
-          {/* 결과 모달 (면접 직후) */}
-          {evaluation && (
+          {/* [수정] 렌더링 로직 변경 
+             1. 결과가 있으면 결과창
+             2. 결과는 없는데 평가 중(isEvaluating)이면 로딩창
+             3. 둘 다 아니면 초기 업로드/설정창
+          */}
+
+          {evaluation ? (
+            /* === 결과 리포트 화면 === */
             <div className="result-card">
               <h3>🎉 면접 결과 리포트</h3>
               <div className="score-display">{evaluation.score}점</div>
@@ -442,9 +451,30 @@ function App() {
                 확인
               </button>
             </div>
-          )}
-
-          {!evaluation && (
+          ) : isEvaluating ? (
+            /* === [추가됨] 평가 분석 중 로딩 화면 === */
+            <div className="loading-container">
+              <div className="spinner"></div>
+              <div className="loading-text">
+                <strong>수고하셨습니다!</strong>
+                <br />
+                <span style={{ fontSize: "16px", color: "#333" }}>
+                  면접관이 결과를 작성하고 있습니다...
+                </span>
+                <br />
+                <span
+                  style={{
+                    fontSize: "12px",
+                    color: "#888",
+                    marginTop: "10px",
+                    display: "block",
+                  }}
+                >
+                  대화 내용 분석 및 피드백 생성 중
+                </span>
+              </div>
+            </div>
+          ) : (
             <>
               {/* === [수정된 부분] 로딩 화면 및 결과 표시 === */}
               <div className="upload-area">
