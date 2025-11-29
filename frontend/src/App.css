@@ -427,3 +427,15 @@ input[type="checkbox"] {
   font-size: 14px;
   margin-top: 8px;
 }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 힌트 버튼 스타일 보강 (선택 사항) */
+.hint-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}

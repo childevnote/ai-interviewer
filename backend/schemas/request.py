@@ -5,7 +5,8 @@ from pydantic import BaseModel
 class ChatRequest(BaseModel):
     message: str
     history: list
-    role: str = "공통" 
+    role: str = None
+    question_count: int = 10
 
 class SimulationRequest(BaseModel):
     history: list
@@ -13,3 +14,9 @@ class SimulationRequest(BaseModel):
 
 class EvaluationRequest(BaseModel):
     history: list
+
+    
+class HintRequest(BaseModel):
+    question: str
+    resume_text: str
+    role: str = "지원자"

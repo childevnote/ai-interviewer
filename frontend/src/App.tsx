@@ -40,15 +40,19 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isInterviewing, setIsInterviewing] = useState<boolean>(false);
   const [turn, setTurn] = useState<Turn>("idle");
-  const [timeLeft, setTimeLeft] = useState<number>(300);
   const [isTestMode, setIsTestMode] = useState<boolean>(false);
   const [selectedRole, setSelectedRole] = useState<string>("");
+  const [targetQuestionCount, setTargetQuestionCount] = useState<number>(5);
   // 자막 & 종료
   const [captionText, setCaptionText] = useState<string>("");
   const [captionSpeaker, setCaptionSpeaker] = useState<"ai" | "user" | null>(
     null
   );
   const [isFinishing, setIsFinishing] = useState<boolean>(false);
+
+  const [hintText, setHintText] = useState<string>("");
+  const [showHint, setShowHint] = useState<boolean>(false);
+  const [isHintLoading, setIsHintLoading] = useState<boolean>(false);
 
   // 결과 및 기록 상태
   const [evaluation, setEvaluation] = useState<HistoryItem | null>(null);
@@ -68,29 +72,31 @@ function App() {
   const silenceStartRef = useRef<number | null>(null);
   const requestRef = useRef<number | null>(null);
   const volumeBarRef = useRef<HTMLDivElement | null>(null);
-
+const isPausedRef = useRef<boolean>(false);
   // 평가 중복 방지 락(Lock)
   const isEvaluatingRef = useRef<boolean>(false);
 
   const SILENCE_THRESHOLD = 15;
-  const SILENCE_DURATION = 3000;
+  const SILENCE_DURATION = 5000;
 
-  useEffect(() => {
-    let interval: number | undefined;
-    if (isInterviewing && timeLeft > 0) {
-      interval = setInterval(() => setTimeLeft((t) => t - 1), 1000);
-    } else if (timeLeft === 0) {
-      alert("시간이 종료되었습니다.");
-      finishInterview();
-    }
-    return () => clearInterval(interval);
-  }, [isInterviewing, timeLeft]);
+const getCurrentQuestionCount = () => {
+    return messages.filter(m => m.role === "assistant").length;
+  };
 
   useEffect(() => {
     if (isInterviewing && turn === "user" && isTestMode) {
       simulateUserResponse();
     }
   }, [turn, isInterviewing, isTestMode]);
+  const handleResumeInterview = () => {
+    setShowHint(false);
+    isPausedRef.current = false;
+    
+    // 다시 사용자 턴으로 설정하고 녹음 시작
+    // 만약 AI가 말을 하던 중에 끊었다면 다시 듣게 할지, 바로 대답할지 결정해야 함.
+    // 여기서는 "대답하기" 버튼이므로 바로 사용자 녹음을 시작합니다.
+    startRecording(); 
+  };
 
   const finishInterview = async () => {
     if (isEvaluatingRef.current) return;
@@ -191,11 +197,16 @@ function App() {
     setCaptionSpeaker("ai");
     setCaptionText("질문 생성 중...");
 
+    setHintText("");
+    setShowHint(false);
+    isPausedRef.current = false;
+
     try {
       const res = await axios.post("http://localhost:8000/chat", {
         message: "",
         history: history,
-        role: selectedRole, // 🔥 선택된 직무 전송
+        role: selectedRole,
+        question_count: targetQuestionCount,
       });
       const { ai_message, audio_data, is_finished } = res.data;
 
@@ -237,6 +248,65 @@ function App() {
     }
   };
 
+const handleHintToggle = async () => {
+    // 이미 힌트가 켜져 있다면 -> 닫기 버튼 역할 (재개)
+    if (showHint) {
+      handleResumeInterview();
+      return;
+    }
+
+    // --- 일시정지 시작 ---
+    isPausedRef.current = true; // 마이크 onstop 이벤트가 백엔드로 전송되는 것을 막음
+
+    // 1) AI 오디오 중단
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+
+    // 2) 마이크/녹음 중단
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+      audioContextRef.current.close(); // 오디오 컨텍스트 닫기 (침묵 감지 중단)
+    }
+    if (requestRef.current) cancelAnimationFrame(requestRef.current); // 애니메이션 프레임 중단
+    
+    // 시각적 피드백
+    setCaptionText("⏸️ 힌트를 확인하는 동안 면접이 일시정지되었습니다.");
+
+    // 3) 힌트 로딩 로직
+    if (hintText) {
+      setShowHint(true); // 이미 텍스트가 있으면 바로 보여줌
+      return;
+    }
+
+    setIsHintLoading(true);
+    try {
+      const lastAiMessage = [...messages].reverse().find(m => m.role === "assistant");
+      if (!lastAiMessage) {
+        alert("현재 답변할 질문이 없습니다.");
+        handleResumeInterview(); // 실패 시 바로 재개
+        return;
+      }
+
+      const res = await axios.post("http://localhost:8000/hint", {
+        question: lastAiMessage.content,
+        resume_text: resumeText,
+        role: selectedRole
+      });
+
+      setHintText(res.data.hint);
+      setShowHint(true);
+    } catch (err) {
+      console.error(err);
+      alert("힌트를 불러오는데 실패했습니다.");
+      handleResumeInterview(); // 실패 시 재개
+    } finally {
+      setIsHintLoading(false);
+    }
+  };
+
   const simulateUserResponse = async () => {
     setCaptionSpeaker("user");
     setCaptionText("생각 중...");
@@ -270,16 +340,13 @@ function App() {
     setTurn("user");
     setCaptionSpeaker("user");
     setCaptionText("듣고 있습니다...");
+    isPausedRef.current = false; // 재개 시 플래그 초기화
 
     try {
-      if (
-        audioContextRef.current &&
-        audioContextRef.current.state !== "closed"
-      ) {
+      if (audioContextRef.current && audioContextRef.current.state !== "closed") {
         await audioContextRef.current.close();
       }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -289,9 +356,14 @@ function App() {
       };
 
       mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, {
-          type: "audio/mp3",
-        });
+        // [수정] 힌트 보기로 인해 일시정지된 경우, 백엔드로 전송하지 않음
+        if (isPausedRef.current) {
+            // 스트림 트랙 정리만 하고 종료
+            stream.getTracks().forEach((track) => track.stop());
+            return; 
+        }
+
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/mp3" });
         await sendAudioToBackend(audioBlob);
 
         if (requestRef.current) cancelAnimationFrame(requestRef.current);
@@ -386,17 +458,15 @@ function App() {
     }
   };
 
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${s < 10 ? "0" : ""}${s}`;
-  };
-
   return (
     <div className="app-container">
       <header>
         <h1>AI 모의 면접</h1>
-        {!showHistory && <div className="timer">{formatTime(timeLeft)}</div>}
+        {!showHistory && isInterviewing && (
+           <div className="timer" style={{ fontSize: "18px", background: "#333", padding: "5px 15px" }}>
+             Q. {getCurrentQuestionCount()} / {targetQuestionCount}
+           </div>
+        )}
       </header>
 
       {/* 1. 면접 기록 보기 모드 */}
@@ -576,6 +646,29 @@ function App() {
                         className="role-selection"
                         style={{ marginTop: "20px", textAlign: "left" }}
                       >
+                        <h3 style={{ fontSize: "16px", marginBottom: "10px", color: "#333" }}>
+                        🔢 질문 개수 선택
+                      </h3>
+                      <div style={{ display: "flex", gap: "10px" }}>
+                        {[10, 20, 30].map((count) => (
+                          <button
+                            key={count}
+                            onClick={() => setTargetQuestionCount(count)}
+                            style={{
+                              padding: "8px 20px",
+                              borderRadius: "20px",
+                              border: targetQuestionCount === count ? "1px solid #3182f6" : "1px solid #d1d6db",
+                              backgroundColor: targetQuestionCount === count ? "#e8f3ff" : "#fff",
+                              color: targetQuestionCount === count ? "#3182f6" : "#6b7684",
+                              fontWeight: targetQuestionCount === count ? "bold" : "normal",
+                              cursor: "pointer",
+                              transition: "all 0.2s"
+                            }}
+                          >
+                            {count}개
+                          </button>
+                        ))}
+                      </div>
                         <h3
                           style={{
                             fontSize: "16px",
@@ -665,6 +758,15 @@ function App() {
         </div>
       ) : (
         <div className="interview-room">
+          {showHint && (
+             <div className="paused-overlay" style={{
+                 position: 'absolute', top: 10, right: 10, 
+                 background: 'rgba(0,0,0,0.6)', color: '#fff', 
+                 padding: '4px 8px', borderRadius: '4px', fontSize: '12px', zIndex: 10 
+             }}>
+                 ⏸ 일시정지됨
+             </div>
+          )}
           <div className="status-message">
             {turn === "ai" && (
               <>
@@ -705,7 +807,72 @@ function App() {
               </span>
             </div>
           </div>
+<div className="hint-section" style={{ margin: "20px 0", width: "100%", maxWidth: "600px" }}>
+            {!showHint && (
+              <button
+                className="secondary-btn"
+                onClick={handleHintToggle}
+                // [핵심] 오직 'user' 턴일 때만 클릭 가능 (AI 발화 중, STT 처리 중 클릭 방지)
+                disabled={turn !== "user" || isHintLoading}
+                style={{
+                  fontSize: "14px",
+                  padding: "8px 16px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "6px",
+                  margin: "0 auto",
+                  // 비활성화 시 시각적 피드백 (흐리게 처리)
+                  opacity: turn === "user" ? 1 : 0.6,
+                  cursor: turn === "user" ? "pointer" : "not-allowed",
+                  transition: "all 0.3s ease"
+                }}
+              >
+                {/* 상태에 따라 버튼 텍스트 변경 */}
+                {isHintLoading ? (
+                  <>🔄 힌트 생성 중...</>
+                ) : turn === "ai" ? (
+                  <>🤫 면접관 질문 듣는 중...</>
+                ) : turn === "processing" ? (
+                  <>⏳ 답변 분석 중...</>
+                ) : (
+                  <>💡 답변 힌트 보기 (일시정지)</>
+                )}
+              </button>
+            )}
 
+            {showHint && hintText && (
+              <div className="hint-box" style={{ 
+                marginTop: "15px", 
+                padding: "20px", 
+                backgroundColor: "#fffde7", 
+                borderRadius: "12px", 
+                border: "2px solid #fbc02d",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                animation: "fadeIn 0.3s ease-in-out",
+                textAlign: "center"
+              }}>
+                <div style={{ textAlign: "left", marginBottom: "15px", color: "#5d4037", lineHeight: "1.6" }}>
+                    <strong style={{ fontSize: "16px", display:"block", marginBottom:"8px" }}>💡 답변 가이드</strong>
+                    {hintText}
+                </div>
+                
+                {/* [핵심] 다시 대답하기 버튼 */}
+                <button 
+                    className="primary-btn"
+                    onClick={handleResumeInterview}
+                    style={{ 
+                        width: "100%", 
+                        padding: "12px", 
+                        fontSize: "16px",
+                        fontWeight: "bold"
+                    }}
+                >
+                    🎙️ 답변 시작하기 (면접 재개)
+                </button>
+              </div>
+            )}
+          </div>
           {turn === "user" && !isTestMode && (
             <div className="volume-container">
               <div className="volume-bar-bg">

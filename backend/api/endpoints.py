@@ -2,7 +2,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 # DB, Service, Schema에서 필요한 것들을 임포트합니다.
 from db import database
 from services import openai_service
-from schemas.request import ChatRequest, SimulationRequest, EvaluationRequest 
+from schemas.request import ChatRequest, SimulationRequest, EvaluationRequest, HintRequest
 
 router = APIRouter()
 
@@ -40,3 +40,7 @@ async def evaluate_interview(request: EvaluationRequest):
 async def get_history():
     # DB 로직 호출
     return database.get_history()
+
+@router.post("/hint")
+async def get_hint(request: HintRequest):
+    return await openai_service.generate_answer_hint(request)
