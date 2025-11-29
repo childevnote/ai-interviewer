@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, ChangeEvent } from "react";
+import { useState, useRef, useEffect } from "react";
+import type { ChangeEvent } from "react";
 import axios from "axios";
 import "./App.css";
 
@@ -432,12 +433,6 @@ function App() {
         </div>
       ) : !isInterviewing ? (
         <div className="setup-box">
-          {/* [수정] 렌더링 로직 변경 
-             1. 결과가 있으면 결과창
-             2. 결과는 없는데 평가 중(isEvaluating)이면 로딩창
-             3. 둘 다 아니면 초기 업로드/설정창
-          */}
-
           {evaluation ? (
             /* === 결과 리포트 화면 === */
             <div className="result-card">
@@ -632,14 +627,22 @@ function App() {
                 )}
               </div>
 
-              <div className="test-mode-card">
+              <label
+                className="test-mode-card"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  cursor: "pointer",
+                }}
+              >
                 <input
                   type="checkbox"
                   checked={isTestMode}
                   onChange={(e) => setIsTestMode(e.target.checked)}
+                  style={{ marginRight: "8px" }} // 체크박스와 글자 사이 간격 살짝 추가
                 />
                 <span>자동 테스트 모드 켜기</span>
-              </div>
+              </label>
 
               <button
                 className="primary-btn"
