@@ -43,7 +43,7 @@ function App() {
   const [isTestMode, setIsTestMode] = useState<boolean>(false);
   const [selectedRole, setSelectedRole] = useState<string>("");
   const [targetQuestionCount, setTargetQuestionCount] = useState<number>(5);
-  // 자막 & 종료
+
   const [captionText, setCaptionText] = useState<string>("");
   const [captionSpeaker, setCaptionSpeaker] = useState<"ai" | "user" | null>(
     null
@@ -54,16 +54,12 @@ function App() {
   const [showHint, setShowHint] = useState<boolean>(false);
   const [isHintLoading, setIsHintLoading] = useState<boolean>(false);
 
-  // 결과 및 기록 상태
   const [evaluation, setEvaluation] = useState<HistoryItem | null>(null);
   const [showHistory, setShowHistory] = useState<boolean>(false);
   const [historyList, setHistoryList] = useState<HistoryItem[]>([]);
-
-  // [추가] 신뢰도 및 로딩 상태
   const [reliability, setReliability] = useState<Reliability | null>(null);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [isEvaluating, setIsEvaluating] = useState<boolean>(false);
-  // Refs
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -73,7 +69,6 @@ function App() {
   const requestRef = useRef<number | null>(null);
   const volumeBarRef = useRef<HTMLDivElement | null>(null);
 const isPausedRef = useRef<boolean>(false);
-  // 평가 중복 방지 락(Lock)
   const isEvaluatingRef = useRef<boolean>(false);
 
   const SILENCE_THRESHOLD = 15;
@@ -92,9 +87,6 @@ const getCurrentQuestionCount = () => {
     setShowHint(false);
     isPausedRef.current = false;
     
-    // 다시 사용자 턴으로 설정하고 녹음 시작
-    // 만약 AI가 말을 하던 중에 끊었다면 다시 듣게 할지, 바로 대답할지 결정해야 함.
-    // 여기서는 "대답하기" 버튼이므로 바로 사용자 녹음을 시작합니다.
     startRecording(); 
   };
 
@@ -146,21 +138,18 @@ const getCurrentQuestionCount = () => {
     }
   };
 
-  // [핵심] 파일 업로드 함수 수정됨
   const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // 1. 상태 초기화 및 로딩 시작
     setResumeText("");
     setReliability(null);
-    setIsUploading(true); // 여기서 로딩 화면을 켭니다.
+    setIsUploading(true);
 
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-      // 2. 서버 요청 (이 시간 동안 로딩 화면이 보임)
       const res = await axios.post("http://localhost:8000/upload", formData);
       setResumeText(res.data.text);
       setReliability(res.data.reliability);
@@ -168,7 +157,6 @@ const getCurrentQuestionCount = () => {
       console.error(err);
       alert("파일 업로드 및 분석 실패");
     } finally {
-      // 3. 성공하든 실패하든 로딩 종료
       setIsUploading(false);
     }
   };
@@ -176,7 +164,7 @@ const getCurrentQuestionCount = () => {
   const startInterview = async () => {
     if (!resumeText) return alert("이력서를 먼저 업로드해주세요.");
 
-    isEvaluatingRef.current = false; // 평가 락 해제
+    isEvaluatingRef.current = false;
     setIsInterviewing(true);
     setEvaluation(null);
     setTurn("ai");
@@ -249,35 +237,30 @@ const getCurrentQuestionCount = () => {
   };
 
 const handleHintToggle = async () => {
-    // 이미 힌트가 켜져 있다면 -> 닫기 버튼 역할 (재개)
     if (showHint) {
       handleResumeInterview();
       return;
     }
 
-    // --- 일시정지 시작 ---
-    isPausedRef.current = true; // 마이크 onstop 이벤트가 백엔드로 전송되는 것을 막음
 
-    // 1) AI 오디오 중단
+    isPausedRef.current = true;
+
     if (audioRef.current) {
       audioRef.current.pause();
     }
 
-    // 2) 마이크/녹음 중단
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
     if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-      audioContextRef.current.close(); // 오디오 컨텍스트 닫기 (침묵 감지 중단)
+      audioContextRef.current.close();
     }
-    if (requestRef.current) cancelAnimationFrame(requestRef.current); // 애니메이션 프레임 중단
-    
-    // 시각적 피드백
+    if (requestRef.current) cancelAnimationFrame(requestRef.current); 
+
     setCaptionText("⏸️ 힌트를 확인하는 동안 면접이 일시정지되었습니다.");
 
-    // 3) 힌트 로딩 로직
     if (hintText) {
-      setShowHint(true); // 이미 텍스트가 있으면 바로 보여줌
+      setShowHint(true);
       return;
     }
 
@@ -286,7 +269,7 @@ const handleHintToggle = async () => {
       const lastAiMessage = [...messages].reverse().find(m => m.role === "assistant");
       if (!lastAiMessage) {
         alert("현재 답변할 질문이 없습니다.");
-        handleResumeInterview(); // 실패 시 바로 재개
+        handleResumeInterview();
         return;
       }
 
@@ -301,7 +284,7 @@ const handleHintToggle = async () => {
     } catch (err) {
       console.error(err);
       alert("힌트를 불러오는데 실패했습니다.");
-      handleResumeInterview(); // 실패 시 재개
+      handleResumeInterview();
     } finally {
       setIsHintLoading(false);
     }
@@ -340,7 +323,7 @@ const handleHintToggle = async () => {
     setTurn("user");
     setCaptionSpeaker("user");
     setCaptionText("듣고 있습니다...");
-    isPausedRef.current = false; // 재개 시 플래그 초기화
+    isPausedRef.current = false;
 
     try {
       if (audioContextRef.current && audioContextRef.current.state !== "closed") {
@@ -356,9 +339,7 @@ const handleHintToggle = async () => {
       };
 
       mediaRecorder.onstop = async () => {
-        // [수정] 힌트 보기로 인해 일시정지된 경우, 백엔드로 전송하지 않음
         if (isPausedRef.current) {
-            // 스트림 트랙 정리만 하고 종료
             stream.getTracks().forEach((track) => track.stop());
             return; 
         }
@@ -469,7 +450,6 @@ const handleHintToggle = async () => {
         )}
       </header>
 
-      {/* 1. 면접 기록 보기 모드 */}
       {showHistory ? (
         <div className="history-container">
           <button className="back-btn" onClick={() => setShowHistory(false)}>
@@ -517,7 +497,6 @@ const handleHintToggle = async () => {
               </button>
             </div>
           ) : isEvaluating ? (
-            /* === [추가됨] 평가 분석 중 로딩 화면 === */
             <div className="loading-container">
               <div className="spinner"></div>
               <div className="loading-text">
@@ -541,10 +520,8 @@ const handleHintToggle = async () => {
             </div>
           ) : (
             <>
-              {/* === [수정된 부분] 로딩 화면 및 결과 표시 === */}
               <div className="upload-area">
                 {isUploading ? (
-                  // 1. 로딩 중 화면
                   <div className="loading-container">
                     <div className="spinner"></div>
                     <div className="loading-text">
@@ -556,7 +533,6 @@ const handleHintToggle = async () => {
                     </div>
                   </div>
                 ) : (
-                  // 2. 평상시 (업로드 버튼)
                   <label
                     className={`file-label ${resumeText ? "uploaded" : ""}`}
                   >
@@ -575,7 +551,6 @@ const handleHintToggle = async () => {
                   </label>
                 )}
 
-                {/* 3. 로딩 완료 후 분석 결과 카드 */}
                 {!isUploading && resumeText && reliability && (
                   <div
                     className="resume-status-card"
@@ -623,7 +598,6 @@ const handleHintToggle = async () => {
                       {reliability.reason}
                     </p>
 
-                    {/* 경고창 (50점 미만) */}
                     {reliability.score < 50 && (
                       <div
                         style={{
@@ -732,7 +706,7 @@ const handleHintToggle = async () => {
                   type="checkbox"
                   checked={isTestMode}
                   onChange={(e) => setIsTestMode(e.target.checked)}
-                  style={{ marginRight: "8px" }} // 체크박스와 글자 사이 간격 살짝 추가
+                  style={{ marginRight: "8px" }} 
                 />
                 <span>자동 테스트 모드 켜기</span>
               </label>
@@ -740,7 +714,6 @@ const handleHintToggle = async () => {
               <button
                 className="primary-btn"
                 onClick={startInterview}
-                // 🔥 직무 미선택 시 시작 불가하도록 변경
                 disabled={!resumeText || isUploading || !selectedRole}
                 style={{
                   opacity:
@@ -812,7 +785,6 @@ const handleHintToggle = async () => {
               <button
                 className="secondary-btn"
                 onClick={handleHintToggle}
-                // [핵심] 오직 'user' 턴일 때만 클릭 가능 (AI 발화 중, STT 처리 중 클릭 방지)
                 disabled={turn !== "user" || isHintLoading}
                 style={{
                   fontSize: "14px",
@@ -822,13 +794,11 @@ const handleHintToggle = async () => {
                   justifyContent: "center",
                   gap: "6px",
                   margin: "0 auto",
-                  // 비활성화 시 시각적 피드백 (흐리게 처리)
                   opacity: turn === "user" ? 1 : 0.6,
                   cursor: turn === "user" ? "pointer" : "not-allowed",
                   transition: "all 0.3s ease"
                 }}
               >
-                {/* 상태에 따라 버튼 텍스트 변경 */}
                 {isHintLoading ? (
                   <>🔄 힌트 생성 중...</>
                 ) : turn === "ai" ? (
@@ -857,7 +827,6 @@ const handleHintToggle = async () => {
                     {hintText}
                 </div>
                 
-                {/* [핵심] 다시 대답하기 버튼 */}
                 <button 
                     className="primary-btn"
                     onClick={handleResumeInterview}

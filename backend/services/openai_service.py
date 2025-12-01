@@ -1,4 +1,3 @@
-# backend/services/openai_service.py
 
 from openai import OpenAI
 from PyPDF2 import PdfReader
@@ -9,10 +8,8 @@ import base64
 import json
 from fastapi import UploadFile, File, HTTPException
 import traceback
-# schemas/request.py에서 Pydantic 모델을 임포트합니다.
 from schemas.request import ChatRequest, SimulationRequest, EvaluationRequest, HintRequest
 
-# .env 파일 로드 및 OpenAI 클라이언트 초기화
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
@@ -21,7 +18,6 @@ if not api_key:
 
 client = OpenAI(api_key=api_key)
 
-# === 서비스 함수 ===
 
 async def upload_resume_analysis(file: UploadFile):
     """이력서 PDF를 읽고 GPT로 분석합니다."""
@@ -74,10 +70,7 @@ async def generate_chat_response(request: ChatRequest):
         messages = request.history.copy()
         current_q_count = sum(1 for m in messages if m['role'] == 'assistant')
         if current_q_count >= request.question_count:
-            # 강제로 종료 처리
             closing_text = "모든 질문이 끝났습니다. 수고하셨습니다. 면접을 종료하겠습니다."
-            
-            # TTS 생성 (종료 멘트)
             speech_response = client.audio.speech.create(
                 model="tts-1", voice="onyx", input=closing_text
             )
@@ -86,12 +79,10 @@ async def generate_chat_response(request: ChatRequest):
             return {
                 "ai_message": closing_text,
                 "audio_data": audio_b64,
-                "is_finished": True # 종료 플래그 True
+                "is_finished": True 
             }
 
-        # 3. 진행 중일 때 시스템 프롬프트 구성
         remaining_count = request.question_count - current_q_count
-        # 시스템 프롬프트 설정 (이 부분은 API 로직과 동일하게 유지)
         role_instruction = f"당신은 {request.role} 직무 면접관입니다." if request.role else "당신은 전문 면접관입니다."
         system_content = f"""
         [중요 지침 - 면접관 모드]
@@ -160,7 +151,6 @@ async def generate_chat_response(request: ChatRequest):
         ai_text = gpt_result.get("response", "오류가 발생했습니다.")
         is_finished = gpt_result.get("is_finished", False)
 
-        # TTS 생성
         speech_response = client.audio.speech.create(
             model="tts-1",
             voice="onyx",

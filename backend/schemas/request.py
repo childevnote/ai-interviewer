@@ -1,4 +1,3 @@
-# backend/schemas/request.py
 
 from pydantic import BaseModel
 
